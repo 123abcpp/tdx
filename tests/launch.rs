@@ -45,6 +45,15 @@ fn launch() {
 
     // finalize measurement
     tdx_vm.finalize().unwrap();
+
+    loop {
+        match tdx_vcpu.fd.run().expect("run failed") {
+            kvm_ioctls::VcpuExit::Hlt => {
+                break;
+            }
+            _ => panic!("Unexpected exit reason: {:?}", errno::Error::last()),
+        }
+    }
 }
 
 /// Round number down to multiple
