@@ -159,6 +159,31 @@ impl TdxVm {
         Ok(())
     }
 
+    pub fn init_mem_region_raw(
+        &self,
+        source_addr: u64,
+        gpa: u64,
+        nr_pages: u64,
+        extend: bool,
+    ) -> Result<(), TdxError> {
+        let mem_region = linux::TdxInitMemRegion {
+            source_addr,
+            gpa,
+            nr_pages,
+        };
+
+        let mut cmd = Cmd::from(&mem_region);
+
+        // determines if we also extend the measurement
+        cmd.flags = extend as u32;
+
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+
+        Ok(())
+    }
+
     /// Complete measurement of the initial TD contents and mark it ready to run
     pub fn finalize(&self) -> Result<(), TdxError> {
         let mut cmd = Cmd {

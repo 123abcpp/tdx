@@ -6,10 +6,16 @@ use vmm_sys_util::*;
 use tdx::launch::{TdxVcpu, TdxVm};
 use tdx::tdvf;
 
+// one page of `hlt`
+const CODE: &[u8; 4096] = &[
+    0xf4; 4096 // hlt
+];
+
 #[test]
 fn launch() {
     const KVM_CAP_GUEST_MEMFD: u32 = 234;
     const KVM_CAP_MEMORY_MAPPING: u32 = 236;
+    const CODE_MEM_ADDRESS: usize = 0x1000;
 
     // create vm
     let mut kvm_fd = Kvm::new().unwrap();
@@ -24,6 +30,48 @@ fn launch() {
     let sections = tdvf::parse_sections(&mut firmware).unwrap();
     let hob_section = tdvf::get_hob_section(&sections).unwrap();
     tdx_vcpu.init(hob_section.memory_address).unwrap();
+
+    // code for the guest to run
+    let userspace_addr = ram_mmap(CODE.len() as u64);
+    let userspace_addr = unsafe { std::slice::from_raw_parts_mut(userspace_addr as *mut u8, CODE.len()) };
+    userspace_addr[..CODE.len()].copy_from_slice(&CODE[..]);
+    let userspace_addr = userspace_addr as *const [u8] as *const u8 as u64;
+    // let code_addr_space: &mut [u8] =
+    //     unsafe { std::slice::from_raw_parts_mut(userspace_addr as *mut u8, CODE.len()) };
+    // code_addr_space[..CODE.len()].copy_from_slice(&CODE[..]);
+    // let userspace_addr = code_addr_space as *const [u8] as *const u8 as u64;
+
+    let code_gmem = KvmCreateGuestMemfd {
+        size: CODE.len() as u64,
+        flags: 0,
+        reserved: [0; 6],
+    };
+    let code_gmem = linux_ioctls::create_guest_memfd(&tdx_vm.fd, &code_gmem);
+    if code_gmem < 0 {
+        panic!("create guest memfd for code failed");
+    }
+
+    let code_mem_region = KvmUserspaceMemoryRegion2 {
+        slot: 22,
+        flags: 1u32 << 2,
+        guest_phys_addr: CODE_MEM_ADDRESS as u64,
+        memory_size: CODE.len() as u64,
+        userspace_addr,
+        guest_memfd_offset: 0,
+        guest_memfd: code_gmem as u32,
+        pad1: 0,
+        pad2: [0; 14],
+    };
+    linux_ioctls::set_user_memory_region2(&tdx_vm.fd, &code_mem_region);
+
+    let attr = KvmMemoryAttributes {
+        address: CODE_MEM_ADDRESS as u64,
+        size: CODE.len() as u64,
+        attributes: 1u64 << 3,
+        flags: 0,
+    };
+    linux_ioctls::set_memory_attributes(&tdx_vm.fd, &attr);
+    tdx_vm.init_mem_region_raw(userspace_addr, CODE_MEM_ADDRESS as u64, CODE.len() as u64 / 4096, false).expect("INIT_MEM_REGION on code failed");
 
     // map memory to guest
     if !check_extension(KVM_CAP_GUEST_MEMFD) {
