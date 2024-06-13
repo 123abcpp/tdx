@@ -107,6 +107,21 @@ impl TdxVm {
                     let phys_bits = unsafe { x86_64::__cpuid(0x8000_0008).eax } & 0xff;
                     entry.eax = (entry.eax & 0xffff_ff00) | (phys_bits & 0xff);
                 }
+                0x4000_0001 => {
+                    const KVM_FEATURE_CLOCKSOURCE_BIT: u8 = 0;
+                    const KVM_FEATURE_CLOCKSOURCE2_BIT: u8 = 3;
+                    const KVM_FEATURE_CLOCKSOURCE_STABLE_BIT: u8 = 24;
+                    const KVM_FEATURE_ASYNC_PF_BIT: u8 = 4;
+                    const KVM_FEATURE_ASYNC_PF_VMEXIT_BIT: u8 = 10;
+                    const KVM_FEATURE_STEAL_TIME_BIT: u8 = 5;
+
+                    entry.eax &= !(1 << KVM_FEATURE_CLOCKSOURCE_BIT
+                        | 1 << KVM_FEATURE_CLOCKSOURCE2_BIT
+                        | 1 << KVM_FEATURE_CLOCKSOURCE_STABLE_BIT
+                        | 1 << KVM_FEATURE_ASYNC_PF_BIT
+                        | 1 << KVM_FEATURE_ASYNC_PF_VMEXIT_BIT
+                        | 1 << KVM_FEATURE_STEAL_TIME_BIT);
+                }
                 _ => (),
             }
         }
