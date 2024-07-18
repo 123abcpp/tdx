@@ -4,7 +4,7 @@ mod linux;
 
 use crate::tdvf::TdvfSection;
 
-use kvm_bindings::{kvm_enable_cap, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
+use kvm_bindings::{kvm_enable_cap, CpuId, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
 use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
@@ -63,7 +63,7 @@ impl TdxVm {
     }
 
     /// Do additional VM initialization that is specific to Intel TDX
-    pub fn init_vm(&self, kvm_fd: &Kvm, caps: &TdxCapabilities) -> Result<(), TdxError> {
+    pub fn init_vm(&self, kvm_fd: &Kvm, caps: &TdxCapabilities) -> Result<CpuId, TdxError> {
         let cpuid = kvm_fd
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
             .unwrap();
@@ -131,7 +131,8 @@ impl TdxVm {
             self.fd.encrypt_op(&mut cmd)?;
         }
 
-        Ok(())
+        let ret = CpuId::from_entries(cpuid_entries.as_slice()).unwrap();
+        Ok(ret)
     }
 
     /// Encrypt a memory continuous region
