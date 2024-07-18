@@ -21,11 +21,11 @@ fn launch() {
     let mut kvm_fd = Kvm::new().unwrap();
     let tdx_vm = TdxVm::new(&kvm_fd, 100).unwrap();
     let caps = tdx_vm.get_capabilities().unwrap();
-    let _ = tdx_vm.init_vm(&kvm_fd, &caps).unwrap();
+    let mut cpuid = tdx_vm.init_vm(&kvm_fd, &caps).unwrap();
 
     // create vcpu
     let mut vcpufd = tdx_vm.fd.create_vcpu(10).unwrap();
-    let tdx_vcpu = TdxVcpu::try_from((&mut vcpufd, &mut kvm_fd)).unwrap();
+    let tdx_vcpu = TdxVcpu::try_from((&mut cpuid, &mut vcpufd, &mut kvm_fd)).unwrap();
     let mut firmware = std::fs::File::open("./tests/data/OVMF.inteltdx.fd").unwrap();
     let sections = tdvf::parse_sections(&mut firmware).unwrap();
     let hob_section = tdvf::get_hob_section(&sections).unwrap();

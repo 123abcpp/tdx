@@ -378,23 +378,21 @@ impl<'a> TdxVcpu<'a> {
     }
 }
 
-impl<'a> TryFrom<(&'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm)> for TdxVcpu<'a> {
+impl<'a> TryFrom<(&'a mut CpuId ,&'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm)> for TdxVcpu<'a> {
     type Error = TdxError;
 
     fn try_from(
-        value: (&'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm),
+        value: (&'a mut CpuId, &'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm),
     ) -> Result<Self, Self::Error> {
         // need to enable the X2APIC bit for CPUID[0x1] so that the kernel can call
         // KVM_SET_MSRS(MSR_IA32_APIC_BASE) without failing
-        let mut cpuid = value
-            .1
-            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)?;
+        let mut cpuid = value.0.clone();
         for entry in cpuid.as_mut_slice().iter_mut() {
             if entry.index == 0x1 {
                 entry.ecx &= 1 << 21;
             }
         }
-        value.0.set_cpuid2(&cpuid)?;
-        Ok(Self { fd: value.0 })
+        value.1.set_cpuid2(&cpuid)?;
+        Ok(Self { fd: value.1 })
     }
 }
