@@ -223,7 +223,7 @@ ioctl_iowr_nr!(
     KvmCreateGuestMemfd
 );
 
-fn create_guest_memfd(vmfd: &kvm_ioctls::VmFd, section: &tdvf::TdvfSection) -> i32 {
+fn create_guest_memfd(vmfd: &kvm_ioctls::VmFd, section: &tdvf::TdxFirmwareEntry) -> i32 {
     let gmem = KvmCreateGuestMemfd {
         size: section.memory_data_size,
         flags: 0,
@@ -257,7 +257,7 @@ fn set_user_memory_region2(
     vmfd: &kvm_ioctls::VmFd,
     slot: u32,
     userspace_address: u64,
-    section: &tdvf::TdvfSection,
+    section: &tdvf::TdxFirmwareEntry,
 ) {
     const KVM_MEM_GUEST_MEMFD: u32 = 1 << 2;
     let mem_region = KvmUserspaceMemoryRegion2 {
@@ -290,7 +290,7 @@ ioctl_iow_nr!(
     KvmMemoryAttributes
 );
 
-fn set_memory_attributes(vmfd: &kvm_ioctls::VmFd, section: &tdvf::TdvfSection) {
+fn set_memory_attributes(vmfd: &kvm_ioctls::VmFd, section: &tdvf::TdxFirmwareEntry) {
     const KVM_MEMORY_ATTRIBUTE_PRIVATE: u64 = 1 << 3;
     let attr = KvmMemoryAttributes {
         address: section.memory_address,

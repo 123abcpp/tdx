@@ -49,6 +49,33 @@ pub struct TdvfSection {
 
     /// The attribute of the section
     pub attributes: u32,
+}
+
+#[repr(packed)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct TdxFirmwareEntry {
+    /// The offset to the raw section in the binary image
+    pub data_offset: u32,
+
+    /// The size of the raw section in the image. If it is zero, the VMM shall allocate zero memory
+    /// from MemoryAddress to (MemoryAddress + MemoryDataSize). If it is zero, then the DataOffset
+    /// shall also be zero
+    pub raw_data_size: u32,
+
+    /// The guest physical address of the section loaded. It must be 4k aligned. Zero means no
+    /// action for the VMM.
+    pub memory_address: u64,
+
+    /// The size of the section to be loaded. It must be 4k aligned. It must be at least
+    /// RawDataSize if non-zero. If MemoryDataSize is greater than RawDataSize, the VMM shall fill
+    /// zero up to the MemoryDataSize. Zero means no action for the VMM.
+    pub memory_data_size: u64,
+
+    /// The type of the TDVF section
+    pub section_type: TdvfSectionType,
+
+    /// The attribute of the section
+    pub attributes: u32,
 
     /// The pointer of the section in the hypervisor if raw_data_size is not 0.
     pub mem_ptr: u64,
@@ -270,7 +297,7 @@ pub fn calculate_tdvf_descriptor_offset(fd: &mut std::fs::File) -> Result<u32, E
 }
 
 /// Parse the entries table and return the TDVF sections
-pub fn parse_sections(fd: &mut std::fs::File) -> Result<Vec<TdvfSection>, Error> {
+pub fn parse_sections(fd: &mut std::fs::File) -> Result<Vec<TdxFirmwareEntry>, Error> {
     let offset = calculate_tdvf_descriptor_offset(fd)?;
     fd.seek(SeekFrom::End(-(offset as i64)))
         .map_err(Error::TableSeek)?;
@@ -311,11 +338,22 @@ pub fn parse_sections(fd: &mut std::fs::File) -> Result<Vec<TdvfSection>, Error>
     })
     .map_err(Error::TableRead)?;
 
-    Ok(sections)
+    let mut entries = Vec::new();
+    for section in sections{
+        let mut entry = TdxFirmwareEntry::default();
+        entry.data_offset = section.data_offset;
+        entry.raw_data_size = section.raw_data_size;
+        entry.memory_address = section.memory_address;
+        entry.memory_data_size = section.memory_data_size;
+        entry.section_type = section.section_type;
+        entry.attributes = section.attributes;
+        entries.push(entry);
+    }
+    Ok(entries)
 }
 
 /// Given the sections in the TDVF table, return the HOB (Hand-off Block) section
-pub fn get_hob_section(sections: &Vec<TdvfSection>) -> Option<&TdvfSection> {
+pub fn get_hob_section(sections: &Vec<TdxFirmwareEntry>) -> Option<&TdxFirmwareEntry> {
     for section in sections {
         match section.section_type {
             TdvfSectionType::TdHob => {
@@ -445,7 +483,7 @@ pub fn tdvf_hob_add_memory_resources(
 #[allow(unused_assignments)]
 pub fn hob_create(
     ram_entries: Vec<TdxRamEntry>,
-    hob_section: &mut TdvfSection,
+    hob_section: &mut TdxFirmwareEntry,
 ) -> Result<(), Error> {
     let mut hob = TdvfHob {
         hob_addr: hob_section.memory_address,

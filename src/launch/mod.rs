@@ -2,7 +2,7 @@
 
 mod linux;
 
-use crate::tdvf::TdvfSection;
+use crate::tdvf::TdxFirmwareEntry;
 
 use kvm_bindings::{kvm_enable_cap, CpuId, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
 use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
@@ -136,7 +136,7 @@ impl TdxVm {
     }
 
     /// Encrypt a memory continuous region
-    pub fn init_mem_region(&self, section: &TdvfSection, source_addr: u64) -> Result<(), TdxError> {
+    pub fn init_mem_region(&self, section: &TdxFirmwareEntry, source_addr: u64) -> Result<(), TdxError> {
         const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
         let mem_region = linux::TdxInitMemRegion {
             source_addr,
