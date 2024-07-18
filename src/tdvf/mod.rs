@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::io::{Read, Seek, SeekFrom};
+use uefi::*;
 use uuid::Uuid;
-
+#[allow(dead_code)]
+mod uefi;
 const EXPECTED_TABLE_FOOTER_GUID: &str = "96b582de-1fb2-45f7-baea-a366c55a082d";
 const EXPECTED_METADATA_GUID: &str = "e47a6535-984a-4798-865e-4685a7bf8ec2";
 
@@ -47,6 +49,9 @@ pub struct TdvfSection {
 
     /// The attribute of the section
     pub attributes: u32,
+
+    /// The pointer of the section in the hypervisor if raw_data_size is not 0.
+    pub mem_ptr: u64,
 }
 
 #[repr(u32)]
@@ -64,9 +69,52 @@ pub enum TdvfSectionType {
     /// Temporary Memory
     TempMem,
 
+    ///Permanent Memory
+    PermMem,
+
+    ///Payload
+    Payload,
+
+    ///Payload Parameter
+    PayloadPara,
+
     /// Reserved
     #[default]
     Reserved = 0xFFFFFFFF,
+}
+
+#[repr(packed)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct TdxRamEntry {
+    /// The guest physical address of the ram part
+    pub address: u64,
+
+    ///The length of the ram part
+    pub length: u64,
+
+    ///The ram part current type
+    pub ram_type: TdxRamType,
+}
+
+#[repr(u32)]
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub enum TdxRamType {
+    RamUnaccepted,
+    RamAdded,
+    /// Reserved
+    #[default]
+    Reserved = 0xFFFFFFFF,
+}
+
+#[repr(packed)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct TdvfHob {
+    pub hob_addr: u64,
+    pub ptr: u64,
+    pub size: u64,
+
+    pub current: u64,
+    pub end: u64,
 }
 
 #[derive(Debug)]
@@ -77,6 +125,8 @@ pub enum Error {
     InvalidDescriptorSignature,
     InvalidDescriptorSize,
     InvalidDescriptorVersion,
+    TdHobOverrun(u64),
+    UnknownTdxRamType(TdxRamType),
 }
 
 impl std::fmt::Display for Error {
@@ -100,6 +150,8 @@ impl std::fmt::Display for Error {
                 write!(f, "TDX Metadata Descriptor version is invalid")
             }
             Self::InvalidDescriptorSize => write!(f, "TDX Metadata Descriptor size is invalid"),
+            Self::TdHobOverrun(size) => write!(f, "TD_HOB overrun, size = 0x{:X}", size),
+            Self::UnknownTdxRamType(ram_type) => write!(f, "Unknown tdx ram type {:?}", ram_type),
         }
     }
 }
@@ -273,4 +325,161 @@ pub fn get_hob_section(sections: &Vec<TdvfSection>) -> Option<&TdvfSection> {
         }
     }
     None
+}
+
+pub fn find_ram_range(
+    entries: &mut Vec<TdxRamEntry>,
+    address: u64,
+    length: u64,
+) -> Option<&mut TdxRamEntry> {
+    for entry in entries {
+        if address + length <= entry.address || entry.address + entry.length <= address {
+            continue;
+        }
+
+        //The to-be-accepted ram range must be fully contained by one RAM entry.
+        if entry.address > address || entry.address + entry.length < address + length {
+            return None;
+        }
+
+        let ram_type = entry.ram_type;
+        if ram_type == TdxRamType::RamAdded {
+            return None;
+        }
+
+        return Some(entry);
+    }
+    return None;
+}
+
+pub fn add_ram_entry(
+    entries: &mut Vec<TdxRamEntry>,
+    address: u64,
+    length: u64,
+    ram_type: TdxRamType,
+) {
+    entries.push(TdxRamEntry {
+        address: address,
+        length: length,
+        ram_type: ram_type,
+    })
+}
+
+pub fn accept_ram_range(entries: &mut Vec<TdxRamEntry>, address: u64, length: u64) {
+    let ram = find_ram_range(entries, address, length);
+    if ram.is_none() {
+        return;
+    }
+    if let Some(entry) = ram {
+        let tmp_address = entry.address;
+        let tmp_length = entry.length;
+        entry.address = address;
+        entry.length = length;
+        entry.ram_type = TdxRamType::RamAdded;
+        let head_length = address - tmp_address;
+        if head_length > 0 {
+            let head_start = tmp_address;
+            add_ram_entry(entries, head_start, head_length, TdxRamType::RamUnaccepted);
+        }
+
+        let tail_start = address + length;
+        if tail_start < tmp_address + tmp_length {
+            let tail_length = tmp_address + tmp_length - tail_start;
+            add_ram_entry(entries, tail_start, tail_length, TdxRamType::RamUnaccepted);
+        }
+    }
+}
+
+#[inline]
+pub fn tdvf_align(hob: &mut TdvfHob, alignment: u64) {
+    let current = hob.current as u64;
+    let aligned = (current + alignment - 1) & !(alignment - 1);
+    hob.current = aligned;
+}
+
+pub fn tdvf_get_area(tdvf_hob: &mut TdvfHob, size: u64) -> Result<u64, Error> {
+    if tdvf_hob.current + size > tdvf_hob.end {
+        return Err(Error::TdHobOverrun(size));
+    }
+    let ret = tdvf_hob.current;
+    tdvf_hob.current += size;
+    tdvf_align(tdvf_hob, 8);
+    return Ok(ret);
+}
+
+pub fn tdvf_hob_add_memory_resources(
+    ram_entries: Vec<TdxRamEntry>,
+    hob: &mut TdvfHob,
+) -> Result<(), Error> {
+    let mut attr: EfiResourceAttributeType ;
+    let mut resource_type: EfiResourceType ;
+
+    for entry in ram_entries {
+        let ram_type = entry.ram_type;
+        if ram_type == TdxRamType::RamUnaccepted {
+            resource_type = EFI_RESOURCE_MEMORY_UNACCEPTED;
+            attr = EFI_RESOURCE_ATTRIBUTE_TDVF_UNACCEPTED;
+        } else if ram_type == TdxRamType::RamAdded {
+            resource_type = EFI_RESOURCE_SYSTEM_MEMORY;
+            attr = EFI_RESOURCE_ATTRIBUTE_TDVF_PRIVATE;
+        } else {
+            return Err(Error::UnknownTdxRamType(entry.ram_type));
+        }
+
+        let region =
+            tdvf_get_area(hob, core::mem::size_of::<EfiHobResourceDescriptor>() as u64).unwrap();
+        let mut descriptor = unsafe { *(region as *const EfiHobResourceDescriptor) };
+        descriptor.header.hob_type = EFI_HOB_TYPE_RESOURCE_DESCRIPTOR;
+        descriptor.header.hob_length = core::mem::size_of::<EfiHobResourceDescriptor>() as u16;
+        descriptor.header.reserved = 0;
+        descriptor.owner = EFI_HOB_OWNER_ZERO;
+        descriptor.resource_type = resource_type;
+        descriptor.resource_attribute = attr;
+        descriptor.physical_start = entry.address;
+        descriptor.resource_length = entry.length;
+    }
+
+    return Ok(());
+}
+
+#[allow(unused_assignments)]
+pub fn hob_create(
+    ram_entries: Vec<TdxRamEntry>,
+    hob_section: &mut TdvfSection,
+) -> Result<(), Error> {
+    let mut hob = TdvfHob {
+        hob_addr: hob_section.memory_address,
+        size: hob_section.memory_data_size,
+        ptr: hob_section.mem_ptr,
+        current: hob_section.mem_ptr,
+        end: hob_section.mem_ptr + hob_section.memory_data_size,
+    };
+
+    let hit = tdvf_get_area(
+        &mut hob,
+        core::mem::size_of::<EfiHobHandoffInfoTable>() as u64,
+    )
+    .unwrap();
+
+    let mut info_table = unsafe { *(hit as *const EfiHobHandoffInfoTable) };
+    info_table = EfiHobHandoffInfoTable::default();
+    info_table.header = EfiHobGenericHeader {
+        hob_type: EFI_HOB_TYPE_HANDOFF,
+        hob_length: core::mem::size_of::<EfiHobHandoffInfoTable>() as u16,
+        reserved: 0,
+    };
+    info_table.version = EFI_HOB_HANDOFF_TABLE_VERSION;
+
+    tdvf_hob_add_memory_resources(ram_entries, &mut hob).unwrap();
+
+    let last_hob =
+        tdvf_get_area(&mut hob, core::mem::size_of::<EfiHobGenericHeader>() as u64).unwrap();
+    let mut header = unsafe { *(last_hob as *const EfiHobGenericHeader) };
+    header.hob_type = EFI_HOB_TYPE_END_OF_HOB_LIST;
+    header.hob_length = core::mem::size_of::<EfiHobGenericHeader>() as u16;
+    header.reserved = 0;
+
+    info_table.efi_end_of_hob_list = hob.hob_addr + (hob.current - hob.ptr);
+
+    return Ok(());
 }
