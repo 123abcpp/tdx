@@ -3,6 +3,7 @@
 mod linux;
 
 use crate::tdvf::TdxFirmwareEntry;
+use crate::tdvf;
 
 use errno::Error;
 use kvm_bindings::{kvm_enable_cap, CpuId, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
@@ -530,4 +531,130 @@ pub fn ram_mmap(size: u64, fd: i32) -> u64 {
     }
 
     addr as u64
+}
+
+// NOTE(jakecorrenti): This IOCTL needs to get re-implemented manually. We need to check if KVM_CAP_MEMORY_MAPPING
+// and KVM_CAP_GUEST_MEMFD are supported on the host, but those values are not present in rust-vmm/kvm-{ioctls, bindings}
+ioctl_io_nr!(KVM_CHECK_EXTENSION, kvm_bindings::KVMIO, 0x03);
+
+pub fn check_extension(i: u32) -> bool {
+    let kvm = Kvm::new().unwrap();
+    (unsafe { ioctl::ioctl_with_val(&kvm, KVM_CHECK_EXTENSION(), i.into()) }) > 0
+}
+
+// FIXME: All of the following code is not currently upstream at rust-vmm/kvm-ioctls. Therefore, we need to implement it ourselves.
+// The work is currently ongoing as of 06/06/2024 and can be found at this link: https://github.com/rust-vmm/kvm-ioctls/pull/264
+#[repr(C)]
+#[derive(Debug)]
+pub struct KvmCreateGuestMemfd {
+    pub size: u64,
+    pub flags: u64,
+    pub reserved: [u64; 6],
+}
+
+ioctl_iowr_nr!(
+    KVM_CREATE_GUEST_MEMFD,
+    kvm_bindings::KVMIO,
+    0xd4,
+    KvmCreateGuestMemfd
+);
+
+pub fn create_guest_memfd(vmfd: &kvm_ioctls::VmFd, section: &tdvf::TdxFirmwareEntry) -> i32 {
+    let gmem = KvmCreateGuestMemfd {
+        size: section.memory_data_size,
+        flags: 0,
+        reserved: [0; 6],
+    };
+    linux_ioctls::create_guest_memfd(&vmfd, &gmem)
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct KvmUserspaceMemoryRegion2 {
+    pub slot: u32,
+    pub flags: u32,
+    pub guest_phys_addr: u64,
+    pub memory_size: u64,
+    pub userspace_addr: u64,
+    pub guest_memfd_offset: u64,
+    pub guest_memfd: u32,
+    pub pad1: u32,
+    pub pad2: [u64; 14],
+}
+
+ioctl_iow_nr!(
+    KVM_SET_USER_MEMORY_REGION2,
+    kvm_bindings::KVMIO,
+    0x49,
+    KvmUserspaceMemoryRegion2
+);
+
+pub fn set_user_memory_region2(
+    vmfd: &kvm_ioctls::VmFd,
+    slot: u32,
+    userspace_address: u64,
+    section: &tdvf::TdxFirmwareEntry,
+) {
+    const KVM_MEM_GUEST_MEMFD: u32 = 1 << 2;
+    let mem_region = KvmUserspaceMemoryRegion2 {
+        slot,
+        flags: KVM_MEM_GUEST_MEMFD,
+        guest_phys_addr: section.memory_address,
+        memory_size: section.memory_data_size,
+        userspace_addr: userspace_address,
+        guest_memfd_offset: 0,
+        guest_memfd: create_guest_memfd(vmfd, section) as u32,
+        pad1: 0,
+        pad2: [0; 14],
+    };
+    linux_ioctls::set_user_memory_region2(vmfd, &mem_region)
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct KvmMemoryAttributes {
+    pub address: u64,
+    pub size: u64,
+    pub attributes: u64,
+    pub flags: u64,
+}
+
+ioctl_iow_nr!(
+    KVM_SET_MEMORY_ATTRIBUTES,
+    kvm_bindings::KVMIO,
+    0xd2,
+    KvmMemoryAttributes
+);
+
+pub fn set_memory_attributes(vmfd: &kvm_ioctls::VmFd, section: &tdvf::TdxFirmwareEntry) {
+    const KVM_MEMORY_ATTRIBUTE_PRIVATE: u64 = 1 << 3;
+    let attr = KvmMemoryAttributes {
+        address: section.memory_address,
+        size: section.memory_data_size,
+        attributes: KVM_MEMORY_ATTRIBUTE_PRIVATE,
+        flags: 0,
+    };
+    linux_ioctls::set_memory_attributes(vmfd, &attr)
+}
+
+pub mod linux_ioctls {
+    use super::*;
+
+    pub fn create_guest_memfd(fd: &kvm_ioctls::VmFd, gmem: &KvmCreateGuestMemfd) -> i32 {
+        unsafe { ioctl::ioctl_with_ref(fd, KVM_CREATE_GUEST_MEMFD(), gmem) }
+    }
+
+    pub fn set_user_memory_region2(fd: &kvm_ioctls::VmFd, mem_region: &KvmUserspaceMemoryRegion2) {
+        let ret = unsafe { ioctl::ioctl_with_ref(fd, KVM_SET_USER_MEMORY_REGION2(), mem_region) };
+        if ret != 0 {
+            panic!("Error: set_user_memory_region2: {}", errno::Error::last())
+        }
+    }
+
+    pub fn set_memory_attributes(fd: &kvm_ioctls::VmFd, attr: &KvmMemoryAttributes) {
+        let ret = unsafe { ioctl::ioctl_with_ref(fd, KVM_SET_MEMORY_ATTRIBUTES(), attr) };
+        if ret != 0 {
+            panic!("Error: set_memory_attributes: {}", errno::Error::last())
+        }
+    }
 }
