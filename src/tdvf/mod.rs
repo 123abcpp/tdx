@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::launch::ram_mmap;
 use std::io::{Read, Seek, SeekFrom};
 use uefi::*;
 use uuid::Uuid;
+
 #[allow(dead_code)]
 mod uefi;
 const EXPECTED_TABLE_FOOTER_GUID: &str = "96b582de-1fb2-45f7-baea-a366c55a082d";
@@ -154,6 +156,7 @@ pub enum Error {
     InvalidDescriptorVersion,
     TdHobOverrun(u64),
     UnknownTdxRamType(TdxRamType),
+    InvalidSectionAddress(u64, u64),
 }
 
 impl std::fmt::Display for Error {
@@ -179,6 +182,11 @@ impl std::fmt::Display for Error {
             Self::InvalidDescriptorSize => write!(f, "TDX Metadata Descriptor size is invalid"),
             Self::TdHobOverrun(size) => write!(f, "TD_HOB overrun, size = 0x{:X}", size),
             Self::UnknownTdxRamType(ram_type) => write!(f, "Unknown tdx ram type {:?}", ram_type),
+            Self::InvalidSectionAddress(address, size) => write!(
+                f,
+                "Failed to reserve ram for TDVF, invalid section address {:x}, size:{:x}",
+                address, size
+            ),
         }
     }
 }
@@ -339,7 +347,7 @@ pub fn parse_sections(fd: &mut std::fs::File) -> Result<Vec<TdxFirmwareEntry>, E
     .map_err(Error::TableRead)?;
 
     let mut entries = Vec::new();
-    for section in sections{
+    for section in sections {
         let mut entry = TdxFirmwareEntry::default();
         entry.data_offset = section.data_offset;
         entry.raw_data_size = section.raw_data_size;
@@ -349,9 +357,39 @@ pub fn parse_sections(fd: &mut std::fs::File) -> Result<Vec<TdxFirmwareEntry>, E
         entry.attributes = section.attributes;
         entries.push(entry);
     }
+
     Ok(entries)
 }
 
+pub fn handle_firmware_entries(
+    ram_entries: &mut Vec<TdxRamEntry>,
+    entries: &mut Vec<TdxFirmwareEntry>,
+    firmware_ptr: u64,
+) -> Result<(), Error> {
+    for entry in entries {
+        match entry.section_type {
+            TdvfSectionType::Bfv | TdvfSectionType::Cfv => {
+                entry.mem_ptr = firmware_ptr + entry.data_offset as u64;
+            }
+            TdvfSectionType::TdHob | TdvfSectionType::TempMem => {
+                entry.mem_ptr = ram_mmap(entry.memory_data_size, -1);
+                accept_ram_range(ram_entries, entry.memory_address, entry.memory_data_size);
+            }
+            TdvfSectionType::PayloadPara | TdvfSectionType::Payload | TdvfSectionType::PermMem => {
+                if find_ram_range(ram_entries, entry.memory_address, entry.memory_data_size)
+                    .is_none()
+                {
+                    return Err(Error::InvalidSectionAddress(
+                        entry.memory_address,
+                        entry.memory_data_size,
+                    ));
+                }
+            }
+            _ => (),
+        }
+    }
+    return Ok(());
+}
 /// Given the sections in the TDVF table, return the HOB (Hand-off Block) section
 pub fn get_hob_section(sections: &Vec<TdxFirmwareEntry>) -> Option<&TdxFirmwareEntry> {
     for section in sections {
@@ -449,8 +487,8 @@ pub fn tdvf_hob_add_memory_resources(
     ram_entries: Vec<TdxRamEntry>,
     hob: &mut TdvfHob,
 ) -> Result<(), Error> {
-    let mut attr: EfiResourceAttributeType ;
-    let mut resource_type: EfiResourceType ;
+    let mut attr: EfiResourceAttributeType;
+    let mut resource_type: EfiResourceType;
 
     for entry in ram_entries {
         let ram_type = entry.ram_type;

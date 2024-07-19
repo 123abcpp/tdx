@@ -136,7 +136,11 @@ impl TdxVm {
     }
 
     /// Encrypt a memory continuous region
-    pub fn init_mem_region(&self, section: &TdxFirmwareEntry, source_addr: u64) -> Result<(), TdxError> {
+    pub fn init_mem_region(
+        &self,
+        section: &TdxFirmwareEntry,
+        source_addr: u64,
+    ) -> Result<(), TdxError> {
         const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
         let mem_region = linux::TdxInitMemRegion {
             source_addr,
@@ -378,11 +382,21 @@ impl<'a> TdxVcpu<'a> {
     }
 }
 
-impl<'a> TryFrom<(&'a mut CpuId ,&'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm)> for TdxVcpu<'a> {
+impl<'a>
+    TryFrom<(
+        &'a mut CpuId,
+        &'a mut kvm_ioctls::VcpuFd,
+        &'a mut kvm_ioctls::Kvm,
+    )> for TdxVcpu<'a>
+{
     type Error = TdxError;
 
     fn try_from(
-        value: (&'a mut CpuId, &'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm),
+        value: (
+            &'a mut CpuId,
+            &'a mut kvm_ioctls::VcpuFd,
+            &'a mut kvm_ioctls::Kvm,
+        ),
     ) -> Result<Self, Self::Error> {
         // need to enable the X2APIC bit for CPUID[0x1] so that the kernel can call
         // KVM_SET_MSRS(MSR_IA32_APIC_BASE) without failing
@@ -395,4 +409,97 @@ impl<'a> TryFrom<(&'a mut CpuId ,&'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls:
         value.1.set_cpuid2(&cpuid)?;
         Ok(Self { fd: value.1 })
     }
+}
+
+/// Round number down to multiple
+pub fn align_down(n: usize, m: usize) -> usize {
+    n / m * m
+}
+
+/// Round number up to multiple
+pub fn align_up(n: usize, m: usize) -> usize {
+    align_down(n + m - 1, m)
+}
+
+/// Reserve a new memory region of the requested size to be used for maping from the given fd (if
+/// any)
+pub fn mmap_reserve(size: usize, fd: i32) -> *mut libc::c_void {
+    let mut flags = libc::MAP_PRIVATE;
+    flags |= libc::MAP_ANONYMOUS;
+    unsafe { libc::mmap(0 as _, size, libc::PROT_NONE, flags, fd, 0) }
+}
+
+/// Activate memory in a reserved region from the given fd (if any), to make it accessible.
+pub fn mmap_activate(
+    ptr: *mut libc::c_void,
+    size: usize,
+    fd: i32,
+    map_flags: u32,
+    map_offset: i64,
+) -> *mut libc::c_void {
+    let noreserve = map_flags & (1 << 3);
+    let readonly = map_flags & (1 << 0);
+    let shared = map_flags & (1 << 1);
+    let sync = map_flags & (1 << 2);
+    let prot = libc::PROT_READ | (if readonly == 1 { 0 } else { libc::PROT_WRITE });
+    let mut map_synced_flags = 0;
+    let mut flags = libc::MAP_FIXED;
+
+    flags |= if fd == -1 { libc::MAP_ANONYMOUS } else { 0 };
+    flags |= if shared >= 1 {
+        libc::MAP_SHARED
+    } else {
+        libc::MAP_PRIVATE
+    };
+    flags |= if noreserve >= 1 {
+        libc::MAP_NORESERVE
+    } else {
+        0
+    };
+
+    if shared >= 1 && sync >= 1 {
+        map_synced_flags = libc::MAP_SYNC | libc::MAP_SHARED_VALIDATE;
+    }
+
+    unsafe { libc::mmap(ptr, size, prot, flags | map_synced_flags, fd, map_offset) }
+}
+
+/// A mmap() abstraction to map guest RAM, simplifying the flag handling, taking care of
+/// alignment requirements and installing guard pages.
+pub fn ram_mmap(size: u64, fd: i32) -> u64 {
+    const ALIGN: u64 = 4096;
+    const GUARD_PAGE_SIZE: u64 = 4096;
+    let mut total = size + ALIGN;
+    let guard_addr = mmap_reserve(total as usize, -1);
+    if guard_addr == libc::MAP_FAILED {
+        panic!("MMAP activate failed");
+    }
+    assert!(ALIGN.is_power_of_two());
+    assert!(ALIGN >= GUARD_PAGE_SIZE);
+
+    let offset = align_up(guard_addr as usize, ALIGN as usize) - guard_addr as usize;
+
+    let addr = mmap_activate(guard_addr.wrapping_add(offset), size as usize, fd, 0, 0);
+
+    if addr == libc::MAP_FAILED {
+        unsafe { libc::munmap(guard_addr, total as usize) };
+        panic!("MMAP activate failed");
+    }
+
+    if offset > 0 {
+        unsafe { libc::munmap(guard_addr, offset as usize) };
+    }
+
+    total -= offset as u64;
+    if total > size + GUARD_PAGE_SIZE {
+        unsafe {
+            libc::munmap(
+                addr.wrapping_add(size as usize)
+                    .wrapping_add(GUARD_PAGE_SIZE as usize),
+                (total - size - GUARD_PAGE_SIZE) as usize,
+            )
+        };
+    }
+
+    addr as u64
 }
