@@ -412,14 +412,31 @@ impl<'a>
     }
 }
 
-pub fn set_cpuid_with_x2apic(cpuid: &mut CpuId, vcpufd: kvm_ioctls::VcpuFd) -> Result<(), Error> {
+pub fn set_cpuid_with_x2apic(cpuid: &mut CpuId, vcpufd: &kvm_ioctls::VcpuFd) -> Result<(), Error> {
     for entry in cpuid.as_mut_slice().iter_mut() {
         if entry.index == 0x1 {
             entry.ecx &= 1 << 21;
         }
     }
-    vcpufd.set_cpuid2(&cpuid)?;
+    vcpufd.set_cpuid2(cpuid)?;
     return Ok(());
+}
+
+pub fn init_vcpu(vcpufd: &kvm_ioctls::VcpuFd, hob_address: u64) -> Result<(), TdxError> {
+    let mut cmd = Cmd {
+        id: linux::CmdId::InitVcpu as u32,
+        flags: 0,
+        data: hob_address as *const u64 as _,
+        error: 0,
+        _unused: 0,
+    };
+    let ret = unsafe { ioctl::ioctl_with_mut_ptr(vcpufd, KVM_MEMORY_ENCRYPT_OP(), &mut cmd) };
+    if ret < 0 {
+        // can't return `ret` because it will just return -1 and not give the error
+        // code. `cmd.error` will also just be 0.
+        return Err(TdxError::from(errno::Error::last()));
+    }
+    Ok(())
 }
 
 /// Round number down to multiple
