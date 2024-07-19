@@ -4,6 +4,7 @@ mod linux;
 
 use crate::tdvf::TdxFirmwareEntry;
 
+use errno::Error;
 use kvm_bindings::{kvm_enable_cap, CpuId, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
 use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
@@ -409,6 +410,16 @@ impl<'a>
         value.1.set_cpuid2(&cpuid)?;
         Ok(Self { fd: value.1 })
     }
+}
+
+pub fn set_cpuid_with_x2apic(cpuid: &mut CpuId, vcpufd: kvm_ioctls::VcpuFd) -> Result<(), Error> {
+    for entry in cpuid.as_mut_slice().iter_mut() {
+        if entry.index == 0x1 {
+            entry.ecx &= 1 << 21;
+        }
+    }
+    vcpufd.set_cpuid2(&cpuid)?;
+    return Ok(());
 }
 
 /// Round number down to multiple
