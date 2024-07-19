@@ -521,7 +521,7 @@ pub fn tdvf_hob_add_memory_resources(
 #[allow(unused_assignments)]
 pub fn hob_create(
     ram_entries: Vec<TdxRamEntry>,
-    hob_section: &mut TdxFirmwareEntry,
+    hob_section: TdxFirmwareEntry,
 ) -> Result<(), Error> {
     let mut hob = TdvfHob {
         hob_addr: hob_section.memory_address,
