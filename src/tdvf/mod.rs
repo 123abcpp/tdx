@@ -84,7 +84,7 @@ pub struct TdxFirmwareEntry {
 }
 
 #[repr(u32)]
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
 pub enum TdvfSectionType {
     /// Boot Firmware Volume
     Bfv,
