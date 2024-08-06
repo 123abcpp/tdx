@@ -19,7 +19,7 @@ fn launch() {
 
     // create vm
     let mut kvm_fd = Kvm::new().unwrap();
-    let tdx_vm = TdxVm::new(&kvm_fd, 100).unwrap();
+    let mut tdx_vm = TdxVm::new(&kvm_fd, 100).unwrap();
     let caps = tdx_vm.get_capabilities().unwrap();
     let mut cpuid = tdx_vm.init_vm(&kvm_fd, &caps).unwrap();
 
@@ -74,6 +74,7 @@ fn launch() {
     linux_ioctls::set_memory_attributes(&tdx_vm.fd, &attr);
     tdx_vm
         .init_mem_region_raw(
+            &tdx_vcpu.fd,
             userspace_addr,
             CODE_MEM_ADDRESS as u64,
             CODE.len() as u64 / 4096,
@@ -91,12 +92,9 @@ fn launch() {
         set_user_memory_region2(&tdx_vm.fd, slot as u32, userspace_address, &section);
         set_memory_attributes(&tdx_vm.fd, &section);
 
-        if check_extension(KVM_CAP_MEMORY_MAPPING) {
-            // TODO(jakecorrenti): the current CentOS SIG doesn't support the KVM_MEMORY_MAPPING or
-            // KVM_TDX_EXTEND_MEMORY ioctls, which is what we would typically use here.
-        } else {
-            tdx_vm.init_mem_region(&section, userspace_address).unwrap();
-        }
+        tdx_vm
+            .init_mem_region(&tdx_vcpu.fd, &section, userspace_address)
+            .unwrap();
     }
 
     // finalize measurement
@@ -111,5 +109,3 @@ fn launch() {
         }
     }
 }
-
-

@@ -8,7 +8,7 @@ pub enum CmdId {
     GetCapabilities,
     InitVm,
     InitVcpu,
-    InitMemRegion,
+    ExtendMemory,
     FinalizeVm,
 }
 
@@ -241,25 +241,12 @@ impl From<&InitVm> for Cmd {
     }
 }
 
-#[repr(C)]
-#[derive(Debug)]
-pub struct TdxInitMemRegion {
-    /// Host physical address of the target page to be added to the TD
-    pub source_addr: u64,
-
-    /// Guest physical address to be mapped
-    pub gpa: u64,
-
-    /// Number of pages to be mapped
-    pub nr_pages: u64,
-}
-
-impl From<&TdxInitMemRegion> for Cmd {
-    fn from(init_mem_region: &TdxInitMemRegion) -> Self {
+impl From<&kvm_bindings::kvm_memory_mapping> for Cmd {
+    fn from(init_mem_region: &kvm_bindings::kvm_memory_mapping) -> Self {
         Self {
-            id: CmdId::InitMemRegion as u32,
+            id: CmdId::ExtendMemory as u32,
             flags: 0,
-            data: init_mem_region as *const TdxInitMemRegion as _,
+            data: init_mem_region as *const kvm_bindings::kvm_memory_mapping as _,
             error: 0,
             _unused: 0,
         }

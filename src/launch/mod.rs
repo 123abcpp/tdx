@@ -1,24 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[allow(unused)]
+mod cpuid;
 mod linux;
 
-use crate::tdvf::TdxFirmwareEntry;
 use crate::tdvf;
+use crate::tdvf::TdxFirmwareEntry;
+use cpuid::*;
 
 use errno::Error;
-use kvm_bindings::{kvm_enable_cap, CpuId, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
+use kvm_bindings::{
+    kvm_enable_cap, kvm_memory_mapping, CpuId, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP,
+};
 use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
 use kvm_ioctls::{Kvm, VmFd};
-use std::arch::x86_64;
 
 // Defined in linux/arch/x86/include/uapi/asm/kvm.h
 const KVM_X86_TDX_VM: u64 = 2;
 
+const fn bit(nr: u32) -> u32 {
+    1 << nr
+}
+
 /// Handle to the TDX VM file descriptor
 pub struct TdxVm {
     pub fd: VmFd,
+    pub phys_bits: u32,
 }
 
 impl TdxVm {
@@ -38,17 +47,29 @@ impl TdxVm {
         cap.args[0] = 24;
         vm_fd.enable_cap(&cap).unwrap();
 
-        Ok(Self { fd: vm_fd })
+        Ok(Self {
+            fd: vm_fd,
+            phys_bits: 0,
+        })
     }
 
     /// Retrieve information about the Intel TDX module
-    pub fn get_capabilities(&self) -> Result<TdxCapabilities, TdxError> {
+    pub fn get_capabilities(&mut self) -> Result<TdxCapabilities, TdxError> {
         let caps = Capabilities::default();
         let mut cmd: Cmd = Cmd::from(&caps);
 
         unsafe {
             self.fd.encrypt_op(&mut cmd)?;
         }
+
+        const TDX_CAP_GPAW_48: u32 = 1 << 0;
+        const TDX_CAP_GPAW_52: u32 = 1 << 1;
+
+        if caps.supported_gpaw & TDX_CAP_GPAW_52 > 0 {
+            self.phys_bits = 52;
+        } else if caps.supported_gpaw & TDX_CAP_GPAW_48 > 0 {
+            self.phys_bits = 48;
+        };
 
         Ok(TdxCapabilities {
             attributes: Attributes {
@@ -76,8 +97,8 @@ impl TdxVm {
 
         // hex for Ob1100000001011111111 based on the XSAVE state-components architecture
         let xcr0_mask = 0x602ff;
-        // hex for 0b11111110100000000 based on the XSAVE state-components architecture
-        let xss_mask = 0x1FD00;
+        // hex for 0b1000000000000000 based on the XSAVE state-components architecture
+        let xss_mask = 0x8000;
 
         let xfam_fixed0 = caps.xfam.fixed0.bits();
         let xfam_fixed1 = caps.xfam.fixed1.bits();
@@ -86,6 +107,51 @@ impl TdxVm {
         for entry in cpuid_entries.as_mut_slice() {
             // mandatory patches for TDX based on XFAM values reported by TdxCapabilities
             match entry.function {
+                0x1 => {
+                    entry.edx &= !(bit(10) | bit(20) | CPUID_IA64);
+                    entry.edx |= CPUID_MSR
+                        | CPUID_PAE
+                        | CPUID_MCE
+                        | CPUID_APIC
+                        | CPUID_MTRR
+                        | CPUID_MCA
+                        | CPUID_CLFLUSH
+                        | CPUID_DTS;
+
+                    entry.ecx &= !(CPUID_EXT_VMX | CPUID_EXT_SMX | bit(16));
+                    entry.ecx |= CPUID_EXT_CX16
+                        | CPUID_EXT_PDCM
+                        | CPUID_EXT_X2APIC
+                        | CPUID_EXT_AES
+                        | CPUID_EXT_XSAVE
+                        | CPUID_EXT_RDRAND
+                        | CPUID_EXT_HYPERVISOR;
+                }
+                0x7 => {
+                    if entry.index == 0 {
+                        entry.ebx &=
+                            !(CPUID_7_0_EBX_TSC_ADJUST | CPUID_7_0_EBX_SGX | CPUID_7_0_EBX_MPX);
+                        entry.ebx |= CPUID_7_0_EBX_FSGSBASE
+                            | CPUID_7_0_EBX_RTM
+                            | CPUID_7_0_EBX_RDSEED
+                            | CPUID_7_0_EBX_SMAP
+                            | CPUID_7_0_EBX_CLFLUSHOPT
+                            | CPUID_7_0_EBX_CLWB
+                            | CPUID_7_0_EBX_SHA_NI;
+
+                        entry.ecx &= !(CPUID_7_0_ECX_FZM
+                            | CPUID_7_0_ECX_MAWAU
+                            | CPUID_7_0_ECX_ENQCMD
+                            | CPUID_7_0_ECX_SGX_LC);
+                        entry.ecx |= CPUID_7_0_ECX_MOVDIR64B | CPUID_7_0_ECX_BUS_LOCK_DETECT;
+
+                        entry.edx |= CPUID_7_0_EDX_SPEC_CTRL
+                            | CPUID_7_0_EDX_ARCH_CAPABILITIES
+                            | CPUID_7_0_EDX_CORE_CAPABILITY
+                            | CPUID_7_0_EDX_SPEC_CTRL_SSBD;
+                    }
+                }
+
                 // XSAVE features and state-components
                 0xD => {
                     if entry.index == 0 {
@@ -96,6 +162,7 @@ impl TdxVm {
                         entry.edx &= ((xfam_fixed0 & xcr0_mask) >> 32) as u32;
                         entry.edx |= ((xfam_fixed1 & xcr0_mask) >> 32) as u32;
                     } else if entry.index == 1 {
+                        entry.eax |= CPUID_XSAVE_XSAVEOPT | CPUID_XSAVE_XSAVEC | CPUID_XSAVE_XSAVES;
                         // XSAVE XCR0 LO
                         entry.ecx &= (xfam_fixed0 as u32) & (xss_mask as u32);
                         entry.ecx |= (xfam_fixed1 as u32) & (xss_mask as u32);
@@ -104,10 +171,14 @@ impl TdxVm {
                         entry.edx |= ((xfam_fixed1 & xss_mask) >> 32) as u32;
                     }
                 }
+                0x8000_0001 => {
+                    entry.edx |=
+                        CPUID_EXT2_NX | CPUID_EXT2_PDPE1GB | CPUID_EXT2_RDTSCP | CPUID_EXT2_LM;
+                }
                 0x8000_0008 => {
                     // host physical address bits supported
-                    let phys_bits = unsafe { x86_64::__cpuid(0x8000_0008).eax } & 0xff;
-                    entry.eax = (entry.eax & 0xffff_ff00) | (phys_bits & 0xff);
+                    entry.eax = (entry.eax & 0xffff_ff00) | (self.phys_bits & 0xff);
+                    entry.ebx = CPUID_8000_0008_EBX_WBNOINVD;
                 }
                 0x4000_0001 => {
                     const KVM_FEATURE_CLOCKSOURCE_BIT: u8 = 0;
@@ -140,52 +211,73 @@ impl TdxVm {
     /// Encrypt a memory continuous region
     pub fn init_mem_region(
         &self,
+        vcpufd: &kvm_ioctls::VcpuFd,
         section: &TdxFirmwareEntry,
         source_addr: u64,
     ) -> Result<(), TdxError> {
         const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
-        let mem_region = linux::TdxInitMemRegion {
-            source_addr,
-            gpa: section.memory_address,
-            nr_pages: section.memory_data_size / 4096,
+        let mapping = kvm_memory_mapping {
+            base_gf: section.memory_address >> 12,
+            nr_pages: section.memory_data_size >> 12,
+            flags: 0,
+            source: source_addr,
         };
-
-        let mut cmd = Cmd::from(&mem_region);
-
-        // determines if we also extend the measurement
-        cmd.flags = if section.attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND > 0 {
-            1
-        } else {
-            0
-        };
-
-        unsafe {
-            self.fd.encrypt_op(&mut cmd)?;
+        loop {
+            match vcpufd.memory_mapping(&mapping) {
+                Ok(_) => break,
+                Err(e) => {
+                    if e == errno::Error::new(libc::EINTR) || e == errno::Error::new(libc::EAGAIN) {
+                        continue;
+                    } else {
+                        return Err(TdxError::from(e.errno()));
+                    }
+                }
+            };
         }
 
+        // determines if we also extend the measurement
+        if section.attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND > 0 {
+            let mut cmd = Cmd::from(&mapping);
+            unsafe {
+                self.fd.encrypt_op(&mut cmd)?;
+            }
+        }
         Ok(())
     }
 
     pub fn init_mem_region_raw(
         &self,
+        vcpufd: &kvm_ioctls::VcpuFd,
         source_addr: u64,
         gpa: u64,
         nr_pages: u64,
         extend: bool,
     ) -> Result<(), TdxError> {
-        let mem_region = linux::TdxInitMemRegion {
-            source_addr,
-            gpa,
+        let mapping = kvm_memory_mapping {
+            base_gf: gpa >> 12,
             nr_pages,
+            flags: 0,
+            source: source_addr,
         };
 
-        let mut cmd = Cmd::from(&mem_region);
+        loop {
+            match vcpufd.memory_mapping(&mapping) {
+                Ok(_) => break,
+                Err(e) => {
+                    if e == errno::Error::new(libc::EINTR) || e == errno::Error::new(libc::EAGAIN) {
+                        continue;
+                    } else {
+                        return Err(TdxError::from(e.errno()));
+                    }
+                }
+            };
+        }
 
-        // determines if we also extend the measurement
-        cmd.flags = extend as u32;
-
-        unsafe {
-            self.fd.encrypt_op(&mut cmd)?;
+        if extend {
+            let mut cmd = Cmd::from(&mapping);
+            unsafe {
+                self.fd.encrypt_op(&mut cmd)?;
+            }
         }
 
         Ok(())
