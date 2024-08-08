@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-pub const NR_CPUID_CONFIGS: usize = 12;
+pub const NR_CPUID_CONFIGS: usize = 24;
 
 /// Trust Domain eXtensions sub-ioctl() commands
 #[repr(u32)]
