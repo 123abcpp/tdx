@@ -53,7 +53,7 @@ pub struct TdvfSection {
     pub attributes: u32,
 }
 
-#[repr(packed)]
+#[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
 pub struct TdxFirmwareEntry {
     /// The offset to the raw section in the binary image
