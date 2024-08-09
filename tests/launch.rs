@@ -86,7 +86,7 @@ fn launch() {
     if !check_extension(KVM_CAP_GUEST_MEMFD) {
         panic!("KVM_CAP_GUEST_MEMFD isn't supported, which is required by TDX");
     }
-
+/* 
     for (slot, section) in sections.iter().enumerate() {
         let userspace_address = ram_mmap(section.memory_data_size, -1);
         set_user_memory_region2(&tdx_vm.fd, slot as u32, userspace_address, &section);
@@ -96,7 +96,7 @@ fn launch() {
             .init_mem_region(&tdx_vcpu.fd, &section, userspace_address)
             .unwrap();
     }
-
+*/
     // finalize measurement
     tdx_vm.finalize().unwrap();
 

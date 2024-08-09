@@ -314,14 +314,13 @@ impl TdxVm {
         &self,
         vcpufd: &kvm_ioctls::VcpuFd,
         section: &TdxFirmwareEntry,
-        source_addr: u64,
     ) -> Result<(), TdxError> {
         const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
         let mapping = kvm_memory_mapping {
             base_gf: section.memory_address >> 12,
             nr_pages: section.memory_data_size >> 12,
             flags: 0,
-            source: source_addr,
+            source: section.mem_ptr,
         };
         loop {
             match vcpufd.memory_mapping(&mapping) {
