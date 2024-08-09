@@ -612,8 +612,8 @@ impl<'a>
 
 pub fn set_cpuid_with_x2apic(cpuid: &mut CpuId, vcpufd: &kvm_ioctls::VcpuFd) -> Result<(), Error> {
     for entry in cpuid.as_mut_slice().iter_mut() {
-        if entry.index == 0x1 {
-            entry.ecx &= 1 << 21;
+        if entry.function == 0x1 {
+            entry.ecx |= 1 << 21;
         }
     }
     vcpufd.set_cpuid2(cpuid)?;
