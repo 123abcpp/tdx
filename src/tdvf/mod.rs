@@ -504,17 +504,18 @@ pub fn tdvf_hob_add_memory_resources(
 
         let region =
             tdvf_get_area(hob, core::mem::size_of::<EfiHobResourceDescriptor>() as u64).unwrap();
-        let mut descriptor = unsafe { *(region as *const EfiHobResourceDescriptor) };
-        descriptor.header.hob_type = EFI_HOB_TYPE_RESOURCE_DESCRIPTOR;
-        descriptor.header.hob_length = core::mem::size_of::<EfiHobResourceDescriptor>() as u16;
-        descriptor.header.reserved = 0;
-        descriptor.owner = EFI_HOB_OWNER_ZERO;
-        descriptor.resource_type = resource_type;
-        descriptor.resource_attribute = attr;
-        descriptor.physical_start = entry.address;
-        descriptor.resource_length = entry.length;
+        unsafe {
+            let descriptor = &mut *(region as *mut EfiHobResourceDescriptor);
+            descriptor.header.hob_type = EFI_HOB_TYPE_RESOURCE_DESCRIPTOR;
+            descriptor.header.hob_length = core::mem::size_of::<EfiHobResourceDescriptor>() as u16;
+            descriptor.header.reserved = 0;
+            descriptor.owner = EFI_HOB_OWNER_ZERO;
+            descriptor.resource_type = resource_type;
+            descriptor.resource_attribute = attr;
+            descriptor.physical_start = entry.address;
+            descriptor.resource_length = entry.length;
+        }
     }
-
     return Ok(());
 }
 
@@ -536,26 +537,27 @@ pub fn hob_create(
         core::mem::size_of::<EfiHobHandoffInfoTable>() as u64,
     )
     .unwrap();
+    unsafe {
+        let info_table = &mut *(hit as *mut EfiHobHandoffInfoTable);
+        *info_table = EfiHobHandoffInfoTable::default();
+        info_table.header = EfiHobGenericHeader {
+            hob_type: EFI_HOB_TYPE_HANDOFF,
+            hob_length: core::mem::size_of::<EfiHobHandoffInfoTable>() as u16,
+            reserved: 0,
+        };
+        info_table.version = EFI_HOB_HANDOFF_TABLE_VERSION;
 
-    let mut info_table = unsafe { *(hit as *const EfiHobHandoffInfoTable) };
-    info_table = EfiHobHandoffInfoTable::default();
-    info_table.header = EfiHobGenericHeader {
-        hob_type: EFI_HOB_TYPE_HANDOFF,
-        hob_length: core::mem::size_of::<EfiHobHandoffInfoTable>() as u16,
-        reserved: 0,
-    };
-    info_table.version = EFI_HOB_HANDOFF_TABLE_VERSION;
+        tdvf_hob_add_memory_resources(ram_entries, &mut hob).unwrap();
 
-    tdvf_hob_add_memory_resources(ram_entries, &mut hob).unwrap();
+        let last_hob =
+            tdvf_get_area(&mut hob, core::mem::size_of::<EfiHobGenericHeader>() as u64).unwrap();
 
-    let last_hob =
-        tdvf_get_area(&mut hob, core::mem::size_of::<EfiHobGenericHeader>() as u64).unwrap();
-    let mut header = unsafe { *(last_hob as *const EfiHobGenericHeader) };
-    header.hob_type = EFI_HOB_TYPE_END_OF_HOB_LIST;
-    header.hob_length = core::mem::size_of::<EfiHobGenericHeader>() as u16;
-    header.reserved = 0;
+        let header = &mut *(last_hob as *mut EfiHobGenericHeader);
+        header.hob_type = EFI_HOB_TYPE_END_OF_HOB_LIST;
+        header.hob_length = core::mem::size_of::<EfiHobGenericHeader>() as u16;
+        header.reserved = 0;
 
-    info_table.efi_end_of_hob_list = hob.hob_addr + (hob.current - hob.ptr);
-
+        info_table.efi_end_of_hob_list = hob.hob_addr + (hob.current - hob.ptr);
+    }
     return Ok(());
 }
