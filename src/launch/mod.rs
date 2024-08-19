@@ -126,7 +126,6 @@ impl TdxVm {
                     entry.ecx &= !(CPUID_EXT_VMX
                         | CPUID_EXT_SMX
                         | CPUID_EXT_MONITOR
-                        | CPUID_EXT_OSXSAVE
                         | CPUID_EXT_DCA
                         | CPUID_EXT_XTPR
                         | CPUID_EXT_TM2
@@ -136,6 +135,7 @@ impl TdxVm {
                         | bit(16));
                     entry.ecx |= CPUID_EXT_CX16
                         | CPUID_EXT_X2APIC
+                        | CPUID_EXT_OSXSAVE
                         | CPUID_EXT_AES
                         | CPUID_EXT_XSAVE
                         | CPUID_EXT_RDRAND
