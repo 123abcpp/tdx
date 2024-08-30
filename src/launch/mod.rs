@@ -25,6 +25,7 @@ const fn bit(nr: u32) -> u32 {
 }
 
 /// Handle to the TDX VM file descriptor
+#[derive(Debug)]
 pub struct TdxVm {
     pub fd: VmFd,
     pub phys_bits: u32,
