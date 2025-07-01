@@ -16,7 +16,9 @@ use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
 use kvm_ioctls::{Kvm, VmFd};
-
+use libc::c_ulong;
+// Def
+const ARCH_REQ_XCOMP_GUEST_PERM: c_ulong = 0x1025;
 // Defined in linux/arch/x86/include/uapi/asm/kvm.h
 const KVM_X86_TDX_VM: u64 = 2;
 
@@ -34,7 +36,12 @@ impl TdxVm {
     /// Create a new TDX VM with KVM
     pub fn new(kvm_fd: &Kvm, max_vcpus: u64) -> Result<(Self, VmFd), TdxError> {
         let vm_fd = kvm_fd.create_vm_with_type(KVM_X86_TDX_VM)?;
-
+        let ret = unsafe {
+            libc::syscall(libc::SYS_arch_prctl, ARCH_REQ_XCOMP_GUEST_PERM, 18)
+        }; 
+        if ret < 0 {
+            panic!("Failed arch_prctl - {:?}", std::io::Error::last_os_error());
+        }
         // TDX requires that MAX_VCPUS and SPLIT_IRQCHIP be set
         let mut cap: kvm_enable_cap = kvm_enable_cap {
             cap: KVM_CAP_MAX_VCPUS,
@@ -93,6 +100,7 @@ impl TdxVm {
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
             .unwrap();
         let mut cpuid_entries: Vec<kvm_bindings::kvm_cpuid_entry2> = cpuid.as_mut_slice().to_vec();
+        //println!("TDX: Supported CPUID entries: {:#x?}", cpuid_entries);
         // resize to 256 entries to make sure that InitVm is 8KB
         cpuid_entries.resize(256, kvm_bindings::kvm_cpuid_entry2::default());
 
@@ -103,6 +111,7 @@ impl TdxVm {
 
         let xfam_fixed0 = caps.xfam.fixed0.bits();
         let xfam_fixed1 = caps.xfam.fixed1.bits();
+        println!("TDX: Xfam fixed0: {:#x}, fixed1: {:#x}", xfam_fixed0, xfam_fixed1);
         // patch cpuid
         for entry in cpuid_entries.as_mut_slice() {
             if !((entry.function == 0 && entry.index == 0) || entry.function == 0xd) {
@@ -115,6 +124,7 @@ impl TdxVm {
             }
             match entry.function {
                 0x1 => {
+                    entry.ebx = 0x200800;
                     entry.edx &= !(bit(10) | bit(20) | CPUID_IA64 | CPUID_ACPI | CPUID_PBE);
                     entry.edx |= CPUID_MSR
                         | CPUID_PAE
@@ -134,20 +144,23 @@ impl TdxVm {
                         | CPUID_EXT_EST
                         | CPUID_EXT_RESERVED
                         | CPUID_EXT_PDCM
+                        | CPUID_EXT_OSXSAVE
                         | bit(16));
                     entry.ecx |= CPUID_EXT_CX16
                         | CPUID_EXT_X2APIC
-                        | CPUID_EXT_OSXSAVE
                         | CPUID_EXT_AES
                         | CPUID_EXT_XSAVE
                         | CPUID_EXT_RDRAND
                         | CPUID_EXT_HYPERVISOR;
+                    println!("ECX:{:#0x}",entry.ecx);
                 }
                 //cache info
                 0x2 => {
                     entry.eax = 1;
                     entry.ecx = 0x4d;
                     entry.edx = 0x2c307d;
+                    entry.ebx = 0x0;
+                    entry.flags = 0x6;
                 }
                 0x5 => {
                     entry.eax = 0x0;
@@ -204,8 +217,17 @@ impl TdxVm {
                             | CPUID_7_0_EDX_CORE_CAPABILITY
                             | CPUID_7_0_EDX_SPEC_CTRL_SSBD;
                     }
-                    if entry.index == 1 || entry.index == 2 {
-                        entry.edx = 0;
+                    if entry.index == 1 {
+                        entry.eax = 0x201c30;
+                        entry.edx = 0x4000;
+                        entry.ebx = 0x0;
+                        entry.ecx = 0x0;
+                    }
+                    if entry.index == 2 {
+                        entry.edx = 0x20;
+                        entry.eax = 0x0;
+                        entry.ebx = 0x0;
+                        entry.ecx = 0x0;
                     }
                 }
                 //Performance Montor
@@ -215,16 +237,31 @@ impl TdxVm {
                     entry.ecx = 0;
                     entry.edx = 0;
                 }
+                //HrdCODE Topolpgy 
+       //         0xB => {
+       //             if entry.index == 0 {
+       //                 entry.eax = 0x0;
+       //                 entry.ebx = 0x1;
+       //                 entry.ecx =0x100;
+       //                 entry.edx = 0;
+       //             }
+       //         }
                 // XSAVE features and state-components
                 0xD => {
                     if entry.index == 0 {
-                        entry.eax &= !(CPUID_XSAVE_AMX_XTILECFG);
+                        //entry.eax &= !(CPUID_XSAVE_AMX_XTILECFG);
+                //        entry.eax &= (CPUID_XSAVE_AMX_XTILECFG);
                         // XSAVE XCR0 LO
                         entry.eax &= (xfam_fixed0 as u32) & (xcr0_mask as u32);
+                        entry.eax |= (CPUID_XSAVE_AMX_XTILECFG);
                         entry.eax |= (xfam_fixed1 as u32) & (xcr0_mask as u32);
                         // XSAVE XCR0 HI
                         entry.edx &= (xfam_fixed0 >> 32) as u32;
                         entry.edx |= (xfam_fixed1 >> 32) as u32;
+                        //EBX: XCR0 => Maximum size required
+                        entry.ebx = 0x2b00;
+                        entry.ecx = 0x2b00;
+
                     } else if entry.index == 1 {
                         entry.eax |= CPUID_XSAVE_XSAVEOPT | CPUID_XSAVE_XSAVEC | CPUID_XSAVE_XSAVES;
                         // XSAVE XCR0 LO
@@ -234,7 +271,15 @@ impl TdxVm {
                         // XSAVE XCR0 HI
                         entry.edx &= (xfam_fixed0 >> 32) as u32;
                         entry.edx |= (xfam_fixed1 >> 32) as u32;
+                        entry.ebx = 0x2cf0;
+                    } else if entry.index == 0xf {
+                        //NEW for PMU
+                        entry.eax = 0x328;
+                        entry.ecx = 0x1;
+                        entry.ebx = 0x0;
+                        entry.edx = 0x0;
                     }
+
                 }
                 0xf | 0x10 | 0x12 | 0x14 | 0x15 | 0x16 | 0x18 | 0x1b | 0x1c | 0x1f => {
                     entry.eax = 0;
@@ -248,8 +293,12 @@ impl TdxVm {
                 }
                 0x8000_0008 => {
                     // host physical address bits supported
-                    entry.eax = (entry.eax & 0xffff_ff00) | (self.phys_bits & 0xff);
-                    entry.ebx = CPUID_8000_0008_EBX_WBNOINVD;
+                   // entry.eax = (entry.eax & 0xffff_ff00) | (self.phys_bits & 0xff);
+                   // entry.ebx = CPUID_8000_0008_EBX_WBNOINVD;
+                   entry.eax = 0x343934;
+                   entry.ebx = 0x200;
+                   entry.ecx = 0x501f;
+                   entry.edx = 0x0;
                 }
                 0x4000_0001 => {
                     const KVM_FEATURE_CLOCKSOURCE_BIT: u8 = 0;
@@ -269,6 +318,90 @@ impl TdxVm {
                 _ => (),
             }
         }
+        //NEW Entry
+       // cpuid_entries.push(kvm_bindings::kvm_cpuid_entry2 {
+       //     function: 0xb,
+       //     index: 0x1,
+       //     flags: 0x1,
+       //     eax:0x5,
+       //     ebx: 0x20,
+       //     ecx: 0x201,
+       //     edx: 0x0,
+       //     padding: [0; 3],
+       // });
+       // cpuid_entries.push(kvm_bindings::kvm_cpuid_entry2 {
+       //     function: 0xb,
+       //     index: 0x2,
+       //     flags: 0x1,
+       //     eax:0x0,
+       //     ebx: 0x0,
+       //     ecx: 0x2,
+       //     edx: 0x0,
+       //     padding: [0; 3],
+       // });
+       // cpuid_entries.push(kvm_bindings::kvm_cpuid_entry2 {
+       //     function: 0xd,
+       //     index: 0xf,
+       //     flags: 0x1,
+       //     eax:0x328,
+       //     ebx: 0x0,
+       //     ecx: 0x1,
+       //     edx: 0x0,
+       //     padding: [0; 3],
+       // });
+       // cpuid_entries.push(kvm_bindings::kvm_cpuid_entry2 {
+       //     function: 0xd,
+       //     index: 0x11,
+       //     flags: 0x1,
+       //     eax:0x40,
+       //     ebx: 0xac0,
+       //     ecx: 0x2,
+       //     edx: 0x0,
+       //     padding: [0; 3],
+       // });
+       // cpuid_entries.push(kvm_bindings::kvm_cpuid_entry2 {
+       //     function: 0xd,
+       //     index: 0x12,
+       //     flags: 0x1,
+       //     eax:0x2000,
+       //     ebx: 0xb00,
+       //     ecx: 0x6,
+       //     edx: 0x0,
+       //     padding: [0; 3],
+       // });
+       // cpuid_entries.push(kvm_bindings::kvm_cpuid_entry2 {
+       //     function: 0xd,
+       //     index: 0x3f,
+       //     flags: 0x1,
+       //     eax:0x000,
+       //     ebx: 0x00,
+       //     ecx: 0x0,
+       //     edx: 0x0,
+       //     padding: [0; 3],
+       // });
+       // //SGX EPC Enumaration Leaf
+       // cpuid_entries.push(kvm_bindings::kvm_cpuid_entry2 {
+       //     function: 0x12,
+       //     index: 0x2,
+       //     flags: 0x1,
+       //     eax:0x0,
+       //     ebx: 0x0,
+       //     ecx: 0x0,
+       //     edx: 0x0,
+       //     padding: [0; 3],
+       // });
+
+       // // L1 Cache
+       // cpuid_entries.push(kvm_bindings::kvm_cpuid_entry2 {
+       //     function: 0x8000_0005,
+       //     index: 0x0,
+       //     flags: 0x0,
+       //     eax:0x1ff01ff,
+       //     ebx: 0x1ff01ff,
+       //     ecx: 0x40020140,
+       //     edx: 0x40020140,
+       //     padding: [0; 3],
+       // });
         /*let (eax, ebx, ecx, edx) = AsmHostID(0xb, 0x1);
         cpuid_entries.push(&mut kvm_bindings::kvm_cpuid_entry2 {
             function: 0xb,
@@ -280,22 +413,30 @@ impl TdxVm {
             edx,
             padding: [0; 3],
         });*/
+
         cpuid_entries.retain(|&entry| {
-            entry.eax != 0
+           ( entry.eax != 0
                 || entry.ebx != 0
                 || entry.ecx != 0
                 || entry.edx != 0
                 || entry.function == 0x4
                 || entry.function == 0xd
                 || entry.function == 0x12
-                || entry.function == 0x14
+                || entry.function == 0x14) &&
+               (!(entry.function >= 0x4000_0000
+                  && entry.function < 0x8000_0000)) && (entry.function != 0x1a) 
+               && (entry.function != 0x8000_0007)
         });
 
+        //cpuid_entries.resize(256, kvm_bindings::kvm_cpuid_entry2::default());
+        let ent = cpuid_entries.len();
         cpuid_entries.resize(256, kvm_bindings::kvm_cpuid_entry2::default());
-        let mut cmd = Cmd::from(&InitVm::new(&cpuid_entries));
+        let mut cmd = Cmd::from(&InitVm::new(&cpuid_entries, ent));
+        println!("tdx cpu entries: {:#x?}", cpuid_entries);
         unsafe {
             vmfd.encrypt_op(&mut cmd)?;
         }
+        println!("TDX: InitVm command executed successfully");
         cpuid_entries.retain(|&entry| {
             entry.eax != 0
                 || entry.ebx != 0
@@ -609,6 +750,7 @@ impl<'a>
     ) -> Result<Self, Self::Error> {
         //Already set x2apic, just use kvm api to set cpuid again for consistency
         let cpuid = value.0.clone();
+        println!("CPUID:{:?}", cpuid);
         value.1.set_cpuid2(&cpuid)?;
         Ok(Self { fd: value.1 })
     }

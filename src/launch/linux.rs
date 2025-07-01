@@ -203,12 +203,15 @@ pub struct InitVm {
 }
 
 impl InitVm {
-    pub fn new(cpuid_entries: &Vec<kvm_bindings::kvm_cpuid_entry2>) -> Self {
-        Self {
-            cpuid_nent: cpuid_entries.len() as u32,
+    pub fn new(cpuid_entries: &Vec<kvm_bindings::kvm_cpuid_entry2>, ent: usize) -> Self {
+        
+        let s = Self {
+            cpuid_nent: ent as u32,
             cpuid_entries: cpuid_entries.as_slice().try_into().unwrap(),
             ..Default::default()
-        }
+        };
+        println!("InitVm:{:?}", s);
+        s
     }
 }
 

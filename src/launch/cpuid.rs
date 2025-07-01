@@ -343,4 +343,5 @@ pub const CPUID_6_EAX_ARAT: u32 = 1 << 2;
 pub const CPUID_APM_INVTSC: u32 = 1 << 8;
 
 pub const XSTATE_ARCH_LBR_MASK: u32 = 1 << 15;
-pub const CPUID_XSAVE_AMX_XTILECFG: u32 = 1 << 18;
+//pub const CPUID_XSAVE_AMX_XTILECFG: u32 = 1 << 18;
+pub const CPUID_XSAVE_AMX_XTILECFG: u32 = 3 << 17;
