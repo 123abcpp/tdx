@@ -22,3 +22,6 @@ kvm-ioctls = { git = "https://github.com/chl337/kvm-ioctls.git",branch = "tdx" }
 libc = "0.2.94"
 uuid = "1.8.0"
 vmm-sys-util = "0.12.1"
+
+[profile.release]
+opt-level = 0

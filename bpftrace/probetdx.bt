@@ -1,0 +1,45 @@
+//kprobe:tdx_td_init {
+//	printf("Enter tdx_td_init\n");
+//}
+//
+//kprobe:setup_tdparams {
+//	printf("Enter setup_tdparams\n");
+//	
+//}
+//
+//kretprobe:setup_tdparams {
+//	printf("Exit setup_tdparams\n");
+//	@[kstack()] = count();
+//}
+//
+//
+//kprobe:kvm_find_cpuid_entry2 {
+//	printf("Entry find_cpuid_entry\n");
+//}
+//
+//kretprobe:kvm_set_cpuid {
+//	printf("Exit set_cpuid\n");
+//	printf("Return :%d", retval);
+//}
+
+kprobe:__xfd_enable_feature {
+	printf("Entry __xfd_enable_feauture\n");
+	$s = (struct fpu_guest *)arg1;
+	$f = $s->xfeatures;
+	$p = $s->perm; 
+	printf("Arg: xfd_er:%x, xfeature:%x, perm:%x\n", arg0, $f, $p);
+}
+
+kretprobe:__xfd_enable_feature {
+	printf("Exit xfd_enable_feature - ret:%d", retval);
+}
+//kretprobe:kvm_find_cpuid_entry2 {
+//	printf("Exit find_cpuid_entry\n");
+//	$ret = (struct kvm_cpuid_entry2 *)retval;
+//		printf("EAX = %d", $ret->eax)
+////	@[kstack()] = count();
+//}
+//
+//kprobe:__tdx_td_init {
+//	printf("Enter __tdx_td_init\n");
+//}
