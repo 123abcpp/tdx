@@ -111,7 +111,7 @@ impl TdxVm {
 
         let xfam_fixed0 = caps.xfam.fixed0.bits();
         let xfam_fixed1 = caps.xfam.fixed1.bits();
-        println!("TDX: Xfam fixed0: {:#x}, fixed1: {:#x}", xfam_fixed0, xfam_fixed1);
+       //println!("TDX: Xfam fixed0: {:#x}, fixed1: {:#x}", xfam_fixed0, xfam_fixed1);
         // patch cpuid
         for entry in cpuid_entries.as_mut_slice() {
             if !((entry.function == 0 && entry.index == 0) || entry.function == 0xd) {
@@ -152,7 +152,7 @@ impl TdxVm {
                         | CPUID_EXT_XSAVE
                         | CPUID_EXT_RDRAND
                         | CPUID_EXT_HYPERVISOR;
-                    println!("ECX:{:#0x}",entry.ecx);
+                    //println!("ECX:{:#0x}",entry.ecx);
                 }
                 //cache info
                 0x2 => {
@@ -432,11 +432,11 @@ impl TdxVm {
         let ent = cpuid_entries.len();
         cpuid_entries.resize(256, kvm_bindings::kvm_cpuid_entry2::default());
         let mut cmd = Cmd::from(&InitVm::new(&cpuid_entries, ent));
-        println!("tdx cpu entries: {:#x?}", cpuid_entries);
+        //println!("tdx cpu entries: {:#x?}", cpuid_entries);
         unsafe {
             vmfd.encrypt_op(&mut cmd)?;
         }
-        println!("TDX: InitVm command executed successfully");
+        //println!("TDX: InitVm command executed successfully");
         cpuid_entries.retain(|&entry| {
             entry.eax != 0
                 || entry.ebx != 0
@@ -750,7 +750,7 @@ impl<'a>
     ) -> Result<Self, Self::Error> {
         //Already set x2apic, just use kvm api to set cpuid again for consistency
         let cpuid = value.0.clone();
-        println!("CPUID:{:?}", cpuid);
+        //println!("CPUID:{:?}", cpuid);
         value.1.set_cpuid2(&cpuid)?;
         Ok(Self { fd: value.1 })
     }

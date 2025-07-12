@@ -210,7 +210,7 @@ impl InitVm {
             cpuid_entries: cpuid_entries.as_slice().try_into().unwrap(),
             ..Default::default()
         };
-        println!("InitVm:{:?}", s);
+        //println!("InitVm:{:?}", s);
         s
     }
 }
